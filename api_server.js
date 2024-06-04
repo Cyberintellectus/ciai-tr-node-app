@@ -8,8 +8,8 @@ const PORT = 3300;
 const pg = require('pg')
 const Pool = require('pg').Pool
 
-const accountSid = 'AC51a2b91e7519cda345df153fe67eae80';
-const authToken = '4e5035cd2b2047050eaaee0d7a8468ce';
+const accountSid = ''; // copy and paste Twillio account SID
+const authToken = ''; // copy and paste Twillio account authToken
 const twillioClient = require('twilio')(accountSid, authToken);
 
 const pool = new Pool({
