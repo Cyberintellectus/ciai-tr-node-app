@@ -8,8 +8,8 @@ const PORT = 3300;
 const pg = require('pg')
 const Pool = require('pg').Pool
 
-const accountSid = ''; // copy and paste Twillio account SID
-const authToken = ''; // copy and paste Twillio account authToken
+const accountSid = 'AC51a2b91e7519cda345df153fe67eae80';
+const authToken = 'd2d8ff3ce2d4a79bdfcb1b44f5822c5a';
 const twillioClient = require('twilio')(accountSid, authToken);
 
 const pool = new Pool({
@@ -101,7 +101,7 @@ function sendWhatsappreferral(doc_id, comment) {
             .create({
               body: comment,
               from: 'whatsapp:+14155238886',
-              to: 'whatsapp:+919948326550'
+              to: toContact
             })
             .then(message => console.log(message.sid));
 
@@ -133,6 +133,29 @@ app.get('/get_referral_doctors', (req, res) => {
     });
 });
 
+/**
+ * Read Modalities to show in dropdown
+*/
+app.get('/read_modalities', (req, res) => {
+  pool
+    .connect()
+    .then(client => {
+      console.log('read_modalities called...');
+      client.query('SELECT * FROM public.tr_modalities WHERE is_modality_deleted=$1 ORDER BY modality_id ASC ', [false], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          console.log(result.rows[0]);
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': result.rows, 'status': 200 });
+        }
+      });
+    });
+});
 /**
  * read lab templates 
  * params
