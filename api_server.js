@@ -8,6 +8,9 @@ const PORT = 3300;
 const pg = require('pg')
 const Pool = require('pg').Pool
 
+const accountSid = 'AC51a2b91e7519cda345df153fe67eae80';
+const authToken = '4e5035cd2b2047050eaaee0d7a8468ce';
+const twillioClient = require('twilio')(accountSid, authToken);
 
 const pool = new Pool({
   user: 'orthanc',
@@ -36,16 +39,18 @@ app.post('/add_referral_doctor', (req, res) => {
 
   pool
     .connect()
-    .then(() => {
+    .then(client => {
       console.log('Connected to PostgreSQL database data ----> formData', formData);
       pool.query('INSERT INTO public.tr_doctor_referrel(doc_name, doc_specialization, doc_clinic, doc_phone_number, doc_email) VALUES ($1, $2, $3, $4, $5) RETURNING doc_id', [`${formData.doc_name}`, `${formData.doc_name}`, `${formData.doc_name}`, `${formData.doc_phone_number}`, `${formData.doc_email}`], function (err, result, done) {
 
         if (err) {
+          client.release();
           return console.error('error running query', err);
         }
-        else{
+        else {
+          client.release();
           console.log(result.rows[0]);
-          res.send({'data':result.rows,'status':200});
+          res.send({ 'data': result.rows, 'status': 200 });
         }
       });
     });
@@ -56,73 +61,180 @@ app.post('/send_study_referral', (req, res) => {
 
   pool
     .connect()
-    .then(() => {
+    .then(client => {
       console.log('Connected to PostgreSQL database data ----> formData', formData);
+      sendWhatsappreferral(formData.sr_to_doctor, formData.sr_requester_comments);
       pool.query('INSERT INTO public.tr_study_referrals(sr_to_doctor, sr_status, sr_requester_id, sr_requester_comments) VALUES ($1, $2, $3, $4) RETURNING sr_id', [`${formData.sr_to_doctor}`, `active`, `${formData.sr_requester_id}`, `${formData.sr_requester_comments}`], function (err, result, done) {
 
         if (err) {
-          return console.error('error running query', err);
-        }
-        else{
-          console.log(result.rows[0]);
-          res.send({'data':result.rows,'status':200});
-        }
-      });
-    });
-});
-
-app.get('/get_referral_doctors', (req, res) => {
-  const formData = req.body;
-
-  pool
-    .connect()
-    .then(() => {
-      console.log('get_referral_doctors --> Connected to PostgreSQL database data ----> formData', formData);
-      pool.query('SELECT * FROM public.tr_doctor_referrel', function (err, result, done) {
-
-        if (err) {
+          client.release();
           return console.error('error running query', err);
         }
         else {
           console.log(result.rows[0]);
-          res.send({'data':result.rows,'status':200});
+          client.release();
+          res.send({ 'data': result.rows, 'status': 200 });
+
         }
-        
-        //output: 1
+      });
+    });
+});
+function sendWhatsappreferral(doc_id, comment) {
+  pool
+    .connect()
+    .then(client => {
+      console.log('get_referral_doctors called...');
+      client.query('SELECT * FROM public.tr_doctor_referrel WHERE doc_id = $1 AND is_deleted=$2', [doc_id, false], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          console.log(result.rows[0]);
+          const docName = result.rows[0].doc_name;
+          const phoneNum = result.rows[0].doc_phone_number;
+          const toContact = 'whatsapp:+91' + phoneNum;
+          client.release();
+          console.log("Connection closed...");
+          twillioClient.messages
+            .create({
+              body: comment,
+              from: 'whatsapp:+14155238886',
+              to: 'whatsapp:+919948326550'
+            })
+            .then(message => console.log(message.sid));
+
+        }
+      });
+    });
+
+
+}
+app.get('/get_referral_doctors', (req, res) => {
+  pool
+    .connect()
+    .then(client => {
+      console.log('get_referral_doctors called...');
+      client.query('SELECT * FROM public.tr_doctor_referrel', function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          console.log(result.rows[0]);
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': result.rows, 'status': 200 });
+
+        }
+      });
+    });
+});
+
+/**
+ * read lab templates 
+ * params
+ * lab_id
+*/
+app.get('/read_templates/:lab_id', (req, res) => {
+  let lab_id = req.params.lab_id;
+  pool
+    .connect()
+    .then(client => {
+      console.log('read_templates called...', lab_id);
+      client.query('SELECT * FROM public.tr_templates WHERE lab_id=$1 AND is_deleted = $2 ORDER BY template_id ASC', [lab_id, false], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          console.log(result.rows[0]);
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': result.rows, 'status': 200 });
+        }
+      });
+    });
+});
+
+/**
+ * read a single template content
+ * params
+ *  lab_id
+ *  template_id
+*/
+app.get('/read_study_template/:lab_id/:template_id', (req, res) => {
+  let lab_id = req.params.lab_id;
+  let template_id = req.params.template_id;
+  pool
+    .connect()
+    .then(client => {
+      console.log('read_templates called...', lab_id);
+      client.query('SELECT * FROM public.tr_templates WHERE lab_id=$1 AND template_id=$2 AND is_deleted = $3 ORDER BY template_id ASC', [lab_id, template_id, false], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          console.log(result.rows[0]);
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': result.rows, 'status': 200 });
+        }
       });
     });
 });
 
 
-
-
 app.post('/create_template', (req, res) => {
   if (req.body) {
-    let fileName = req.body.labName;
-    //fileName = fileName.replace(/ /g, "_") + '.json';
-    const data = readDataFromFile(fileName);
-    console.log("Before ", data);
-    const newItem = req.body;
-    var today = new Date();
-    var dd = String(today.getDate()).padStart(2, '0');
-    var mm = today.getMonth();
-    var yyyy = today.getFullYear();
+    let template_body = req.body;
+    pool
+      .connect()
+      .then(client => {
+        console.log('create_template ---> ', template_body);
+        pool.query('INSERT INTO public.tr_templates(modality, template_content, lab_id) VALUES ($1, $2, $3) RETURNING template_id', [`${template_body.modality}`, `${template_body.template_content}`, `${template_body.lab_id}`], function (err, result, done) {
 
-    today = dd + '/' + mm + '/' + yyyy;
-    console.log(today);
-    newItem.currentDate = today;
+          if (err) {
+            client.release();
+            return console.error('error running query', err);
+          }
+          else {
+            client.release();
+            console.log(result.rows[0]);
+            res.send({ 'data': result.rows, 'status': 200 });
+          }
+        });
+      });
+    // let fileName = req.body.labName;
+    // //fileName = fileName.replace(/ /g, "_") + '.json';
+    // const data = readDataFromFile(fileName);
+    // console.log("Before ", data);
+    // const newItem = req.body;
+    // var today = new Date();
+    // var dd = String(today.getDate()).padStart(2, '0');
+    // var mm = today.getMonth();
+    // var yyyy = today.getFullYear();
 
-    const i = data.findIndex(x => x.modality === req.body.modality)
-    if (i > -1) {
-      console.log("Object found inside the array.", i);
-      data[i] = newItem
+    // today = dd + '/' + mm + '/' + yyyy;
+    // console.log(today);
+    // newItem.currentDate = today;
 
-    } else {
-      console.log("Object Not found insert new one.");
-      data.push(newItem);
-    }
-    saveDataToFile(data, fileName);
-    res.send('Item added successfully...');
+    // const i = data.findIndex(x => x.modality === req.body.modality)
+    // if (i > -1) {
+    //   console.log("Object found inside the array.", i);
+    //   data[i] = newItem
+
+    // } else {
+    //   console.log("Object Not found insert new one.");
+    //   data.push(newItem);
+    // }
+    // saveDataToFile(data, fileName);
+    // res.send('Item added successfully...');
   }
   else {
     res.send('create_template Error');
@@ -143,15 +255,18 @@ app.get('/read/:id', (req, res) => {
 app.get('/read_modality/:modality/:labName', (req, res) => {
   pool
     .connect()
-    .then(() => {
+    .then(client => {
       console.log('Connected to PostgreSQL database');
       pool.query('SELECT * FROM tr_templates', function (err, result, done) {
 
         if (err) {
+          client.release();
           return console.error('error running query', err);
         }
-        console.log(result.rows[0]);
-        //output: 1
+        else {
+          console.log(result.rows[0]);
+          res.send({ 'data': result.rows, 'status': 200 });
+        }
       });
     })
     .catch((err) => {
