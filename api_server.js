@@ -78,6 +78,10 @@ app.post('/send_study_referral', (req, res) => {
     });
 });
 function sendWhatsappreferral(doc_id, comment) {
+  let updatedComment = '';
+  if(comment != ''){
+    updatedComment = comment.replace("http://localhost:3000", "http://ciaiteleradiology.com").replace("Dr. Laxman", "Doctor");
+  }
   pool
     .connect()
     .then(client => {
@@ -94,16 +98,16 @@ function sendWhatsappreferral(doc_id, comment) {
           let authToken = '';
           let phoneNum = '';
           let docName = '';
-          if(result.rows[0].doc_clinic == 'watsp'){
-             accountSid = result.rows[0].doc_name;
-             authToken = result.rows[0].doc_phone_number;
-             docName = result.rows[1].doc_name;
+          if (result.rows[0].doc_clinic == 'watsp') {
+            accountSid = result.rows[0].doc_name;
+            authToken = result.rows[0].doc_phone_number;
+            docName = result.rows[1].doc_name;
             phoneNum = result.rows[1].doc_phone_number;
           }
-          else{
-             accountSid = result.rows[1].doc_name;
-             authToken = result.rows[1].doc_phone_number;
-             docName = result.rows[0].doc_name;
+          else {
+            accountSid = result.rows[1].doc_name;
+            authToken = result.rows[1].doc_phone_number;
+            docName = result.rows[0].doc_name;
             phoneNum = result.rows[0].doc_phone_number;
           }
           // const docName = result.rows[0].doc_name;
@@ -118,7 +122,7 @@ function sendWhatsappreferral(doc_id, comment) {
           console.log("Connection closed...");
           twillioClient.messages
             .create({
-              body: comment,
+              body: updatedComment,
               from: 'whatsapp:+14155238886',
               to: toContact
             })
