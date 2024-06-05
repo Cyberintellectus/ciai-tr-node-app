@@ -8,9 +8,7 @@ const PORT = 3300;
 const pg = require('pg')
 const Pool = require('pg').Pool
 
-const accountSid = 'AC51a2b91e7519cda345df153fe67eae80';
-const authToken = 'd2d8ff3ce2d4a79bdfcb1b44f5822c5a';
-const twillioClient = require('twilio')(accountSid, authToken);
+
 
 const pool = new Pool({
   user: 'orthanc',
@@ -84,17 +82,38 @@ function sendWhatsappreferral(doc_id, comment) {
     .connect()
     .then(client => {
       console.log('get_referral_doctors called...');
-      client.query('SELECT * FROM public.tr_doctor_referrel WHERE doc_id = $1 AND is_deleted=$2', [doc_id, false], function (err, result, done) {
+      client.query('SELECT doc_clinic, doc_name, doc_phone_number FROM public.tr_doctor_referrel WHERE doc_id = $1 AND is_deleted=$2 UNION SELECT srv_name, srv_secrt, srv_auth_cd FROM public.env_info WHERE _id=1', [doc_id, false], function (err, result, done) {
 
         if (err) {
           client.release();
           return console.error('error running query', err);
         }
         else {
-          console.log(result.rows[0]);
-          const docName = result.rows[0].doc_name;
-          const phoneNum = result.rows[0].doc_phone_number;
+          console.log(result.rows);
+          let accountSid = '';
+          let authToken = '';
+          let phoneNum = '';
+          let docName = '';
+          if(result.rows[0].doc_clinic == 'watsp'){
+             accountSid = result.rows[0].doc_name;
+             authToken = result.rows[0].doc_phone_number;
+             docName = result.rows[1].doc_name;
+            phoneNum = result.rows[1].doc_phone_number;
+          }
+          else{
+             accountSid = result.rows[1].doc_name;
+             authToken = result.rows[1].doc_phone_number;
+             docName = result.rows[0].doc_name;
+            phoneNum = result.rows[0].doc_phone_number;
+          }
+          // const docName = result.rows[0].doc_name;
+          // const phoneNum = result.rows[0].doc_phone_number;
+          console.log("Cresd ", accountSid, authToken);
           const toContact = 'whatsapp:+91' + phoneNum;
+
+          // const accountSid = result.rows[1].doc_name;
+          // const authToken = result.rows[1].doc_phone_number;
+          const twillioClient = require('twilio')(accountSid, authToken);
           client.release();
           console.log("Connection closed...");
           twillioClient.messages
@@ -184,7 +203,7 @@ app.get('/read_templates/:lab_id', (req, res) => {
 });
 
 /**
- * read a single template content
+ * read a single template content for update
  * params
  *  lab_id
  *  template_id
@@ -212,6 +231,41 @@ app.get('/read_study_template/:lab_id/:template_id', (req, res) => {
     });
 });
 
+/**
+ * read a single template content for update
+ * params
+ *  lab_id
+ *  template_id
+*/
+app.get('/read_study_template_for_generate/:lab_id/:modality', (req, res) => {
+  let lab_id = req.params.lab_id;
+  let modality = req.params.modality;
+  pool
+    .connect()
+    .then(client => {
+      console.log('read_study_template_for_generate called...', lab_id);
+      client.query('SELECT * FROM public.tr_templates WHERE lab_id=$1 AND modality=$2 AND is_deleted = $3 ORDER BY template_id ASC', [lab_id, modality, false], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          console.log(result.rows[0]);
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': result.rows[0], 'status': 200 });
+        }
+      });
+    });
+});
+
+/**
+ * update a single template content
+ * params
+ *  lab_id
+ *  template_id
+*/
 
 app.post('/create_template', (req, res) => {
   if (req.body) {
@@ -258,6 +312,33 @@ app.post('/create_template', (req, res) => {
     // }
     // saveDataToFile(data, fileName);
     // res.send('Item added successfully...');
+  }
+  else {
+    res.send('create_template Error');
+  }
+
+});
+
+app.post('/update_template', (req, res) => {
+  if (req.body) {
+    let template_body = req.body;
+    pool
+      .connect()
+      .then(client => {
+        console.log('update_template ---> ', template_body);
+        // 'UPDATE public.tr_templates SET template_content = $1 WHERE modality = $2', [template_body.template_content, template_body.modality],
+        pool.query('UPDATE public.tr_templates SET template_content = $1 WHERE modality = $2', [template_body.template_content, template_body.modality], function (err, result, done) {
+          if (err) {
+            client.release();
+            return console.error('error running query', err);
+          }
+          else {
+            client.release();
+            console.log(result.rows[0]);
+            res.send({ 'data': result.rows, 'status': 200 });
+          }
+        });
+      });
   }
   else {
     res.send('create_template Error');
