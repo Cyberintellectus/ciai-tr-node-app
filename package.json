@@ -17,8 +17,6 @@
     "fs": "^0.0.1-security",
     "jsonwebtoken": "^9.0.2",
     "keycloak-backend": "^5.0.0",
-    "keycloak-connect": "^25.0.1",
-    "keycloak-js": "^25.0.1",
     "pg": "^8.11.5",
     "twilio": "^5.1.0"
   }

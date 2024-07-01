@@ -17,7 +17,7 @@ module.exports.isAuthorized = async (req, res, next) =>{
     }
     catch(err){
         console.log("catch  error..", err);
-        res.json({'Status':err});
+        res.json({'result':err});
     }
     
 }
