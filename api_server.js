@@ -262,12 +262,14 @@ app.get('/docker-sample', auth.isAuthorized, (req, res) => {
   }
 
 });
+
+
 app.get('/read_modalities', auth.isAuthorized, (req, res) => {
   pool
     .connect()
     .then(client => {
       console.log('read_modalities called...');
-      client.query('SELECT * FROM public.tr_modalities WHERE is_modality_deleted=$1 ORDER BY modality_id ASC ', [false], function (err, result, done) {
+      client.query('SELECT t1.* FROM tr_modalities t1 LEFT JOIN tr_templates t2 ON t2.modality = t1.modality_name WHERE t2.modality IS NULL ORDER BY t1.modality_name ASC', function (err, result, done) {
 
         if (err) {
           client.release();
