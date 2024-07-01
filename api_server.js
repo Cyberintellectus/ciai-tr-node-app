@@ -1,7 +1,17 @@
 const fs = require('fs');
 const express = require('express');
 const bodyParser = require('body-parser');
+const jwt = require('jsonwebtoken');
 const cors = require('cors');
+const dotenv = require('dotenv');
+
+const auth = require('./middleware/keycloak');
+const accountSid1 = process.env.ACCOUNT_SID;
+const authToken1 = process.env.AUTH_TOKEN;
+//const twillioClient = require('twilio')(accountSid, authToken);
+
+
+dotenv.config();
 
 const app = express();
 const PORT = 3300;
@@ -11,17 +21,27 @@ const Pool = require('pg').Pool
 
 
 const pool = new Pool({
-  user: 'orthanc',
-  password: 'orthanc',
-  host: '91.108.110.46',
+  user: process.env.USER,
+  password: process.env.PASSWORD,
+  host: process.env.HOST,
   port: '5432',
-  database: 'teleradiology',
+  database: process.env.DB,
 });
 const FILE_NAME = 'data.json';
 
 app.use(cors())
 // Middleware to parse request body
 app.use(bodyParser.json());
+
+app.post('/login', (req, res) => {
+  const formData = req.body;
+  console.log("formData", formData);
+  const token = jwt.sign({ id: formData.email }, 'secret');
+
+  // Return the token to the user
+  res.json({ token });
+  //res.send('Item added successfully.');
+});
 
 // Create operation
 app.post('/create', (req, res) => {
@@ -32,7 +52,30 @@ app.post('/create', (req, res) => {
   res.send('Item added successfully.');
 });
 
-app.post('/add_referral_doctor', (req, res) => {
+
+app.post('/update_referral_doctor', auth.isAuthorized, (req, res) => {
+  const formData = req.body;
+  pool
+    .connect()
+    .then(client => {
+      console.log('Connected to PostgreSQL database data ----> formData', formData);
+      pool.query('UPDATE public.tr_doctor_referrel SET doc_name=$1, doc_specialization=$2, doc_clinic=$3, doc_phone_number=$4, doc_email=$5 WHERE doc_id=$6 RETURNING doc_id', [`${formData.doc_name} `, `${formData.doc_name} `, `${formData.doc_name} `, `${formData.doc_phone_number} `, `${formData.doc_email}`, `${formData.doc_id}`], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          client.release();
+          console.log(result);
+          res.send({ 'result': result, 'status': 200 });
+        }
+      });
+    });
+});
+
+
+app.post('/add_referral_doctor', auth.isAuthorized, (req, res) => {
   const formData = req.body;
 
   pool
@@ -54,7 +97,7 @@ app.post('/add_referral_doctor', (req, res) => {
     });
 });
 
-app.post('/send_study_referral', (req, res) => {
+app.post('/send_study_referral', auth.isAuthorized, (req, res) => {
   const formData = req.body;
 
   pool
@@ -79,7 +122,7 @@ app.post('/send_study_referral', (req, res) => {
 });
 function sendWhatsappreferral(doc_id, comment) {
   let updatedComment = '';
-  if(comment != ''){
+  if (comment != '') {
     updatedComment = comment.replace("http://localhost:3000", "http://ciaiteleradiology.com").replace("Dr. Laxman", "Doctor");
   }
   pool
@@ -131,10 +174,23 @@ function sendWhatsappreferral(doc_id, comment) {
         }
       });
     });
-
-
 }
-app.get('/get_referral_doctors', (req, res) => {
+app.get('/send-whatsapp-message', async (req, res) => { 
+ // const twillioClient = require('twilio')('AC51a2b91e7519cda345df153fe67eae80', '4e5035cd2b2047050eaaee0d7a8468ce');
+ const twillioClient = require('twilio')('AC51a2b91e7519cda345df153fe67eae80', 'd2d8ff3ce2d4a79bdfcb1b44f5822c5a');
+  //client.release();
+  console.log("Connection closed...");
+  twillioClient.messages
+    .create({
+      body: 'test comment added',
+      from: 'whatsapp:+14155238886',
+      to: 'whatsapp:+919948326550'
+    })
+    .then(message => console.log(message));
+});
+
+
+app.get('/get_referral_doctors', auth.isAuthorized, async (req, res) => {
   pool
     .connect()
     .then(client => {
@@ -150,7 +206,6 @@ app.get('/get_referral_doctors', (req, res) => {
           client.release();
           console.log("Connection closed...")
           res.send({ 'data': result.rows, 'status': 200 });
-
         }
       });
     });
@@ -159,12 +214,62 @@ app.get('/get_referral_doctors', (req, res) => {
 /**
  * Read Modalities to show in dropdown
 */
-app.get('/read_modalities', (req, res) => {
+app.get('/docker-sample', auth.isAuthorized, (req, res) => {
+  const menuItems = [
+    {
+      name: "Croissant",
+      price: "$1",
+      onMenu: true
+    },
+    {
+      name: "Latte",
+      price: "$5",
+      onMenu: true
+    },
+    {
+      name: "Roti Canai",
+      price: "$0.50",
+      onMenu: true
+    },
+    {
+      name: "Hot Chocolate",
+      price: "$5",
+      onMenu: false
+    },
+    {
+      name: "Satay",
+      price: "$8",
+      onMenu: false
+    },
+    {
+      name: "Pad Thai",
+      price: "$7",
+      onMenu: false
+    }
+  ];
+
+  try {
+    let filtered = menuItems.filter(item => {
+      if (item.onMenu === true) {
+        return item;
+      }
+    });
+
+    // Return filtered data
+    res.json(filtered);
+  } catch (error) {
+    return next(error);
+  }
+
+});
+
+
+app.get('/read_modalities', auth.isAuthorized, (req, res) => {
   pool
     .connect()
     .then(client => {
       console.log('read_modalities called...');
-      client.query('SELECT * FROM public.tr_modalities WHERE is_modality_deleted=$1 ORDER BY modality_id ASC ', [false], function (err, result, done) {
+      client.query('SELECT t1.* FROM tr_modalities t1 LEFT JOIN tr_templates t2 ON t2.modality = t1.modality_name WHERE t2.modality IS NULL ORDER BY t1.modality_name ASC', function (err, result, done) {
 
         if (err) {
           client.release();
@@ -184,7 +289,8 @@ app.get('/read_modalities', (req, res) => {
  * params
  * lab_id
 */
-app.get('/read_templates/:lab_id', (req, res) => {
+app.get('/read_templates/:lab_id', auth.isAuthorized, (req, res) => {
+  console.log("ENV Info updated.......")
   let lab_id = req.params.lab_id;
   pool
     .connect()
@@ -212,7 +318,7 @@ app.get('/read_templates/:lab_id', (req, res) => {
  *  lab_id
  *  template_id
 */
-app.get('/read_study_template/:lab_id/:template_id', (req, res) => {
+app.get('/read_study_template/:lab_id/:template_id', auth.isAuthorized, (req, res) => {
   let lab_id = req.params.lab_id;
   let template_id = req.params.template_id;
   pool
@@ -241,7 +347,7 @@ app.get('/read_study_template/:lab_id/:template_id', (req, res) => {
  *  lab_id
  *  template_id
 */
-app.get('/read_study_template_for_generate/:lab_id/:modality', (req, res) => {
+app.get('/read_study_template_for_generate/:lab_id/:modality', auth.isAuthorized, (req, res) => {
   let lab_id = req.params.lab_id;
   let modality = req.params.modality;
   pool
@@ -271,7 +377,7 @@ app.get('/read_study_template_for_generate/:lab_id/:modality', (req, res) => {
  *  template_id
 */
 
-app.post('/create_template', (req, res) => {
+app.post('/create_template', auth.isAuthorized, (req, res) => {
   if (req.body) {
     let template_body = req.body;
     pool
@@ -291,31 +397,6 @@ app.post('/create_template', (req, res) => {
           }
         });
       });
-    // let fileName = req.body.labName;
-    // //fileName = fileName.replace(/ /g, "_") + '.json';
-    // const data = readDataFromFile(fileName);
-    // console.log("Before ", data);
-    // const newItem = req.body;
-    // var today = new Date();
-    // var dd = String(today.getDate()).padStart(2, '0');
-    // var mm = today.getMonth();
-    // var yyyy = today.getFullYear();
-
-    // today = dd + '/' + mm + '/' + yyyy;
-    // console.log(today);
-    // newItem.currentDate = today;
-
-    // const i = data.findIndex(x => x.modality === req.body.modality)
-    // if (i > -1) {
-    //   console.log("Object found inside the array.", i);
-    //   data[i] = newItem
-
-    // } else {
-    //   console.log("Object Not found insert new one.");
-    //   data.push(newItem);
-    // }
-    // saveDataToFile(data, fileName);
-    // res.send('Item added successfully...');
   }
   else {
     res.send('create_template Error');
@@ -323,7 +404,7 @@ app.post('/create_template', (req, res) => {
 
 });
 
-app.post('/update_template', (req, res) => {
+app.post('/update_template', auth.isAuthorized, (req, res) => {
   if (req.body) {
     let template_body = req.body;
     pool
@@ -360,7 +441,7 @@ app.get('/read/:id', (req, res) => {
     res.status(404).send('Item not found.');
   }
 });
-app.get('/read_modality/:modality/:labName', (req, res) => {
+app.get('/read_modality/:modality/:labName', auth.isAuthorized, (req, res) => {
   pool
     .connect()
     .then(client => {
@@ -395,7 +476,7 @@ app.get('/read_modality/:modality/:labName', (req, res) => {
 });
 
 
-app.get('/read_json/:labName', (req, res) => {
+app.get('/read_json/:labName', auth.isAuthorized, (req, res) => {
   res.set('Access-Control-Allow-Origin', '*');
   let fileName = req.params.labName;
   //fileName = fileName.replace(/ /g, "_") + '.json';
@@ -409,7 +490,7 @@ app.get('/read_json/:labName', (req, res) => {
 });
 
 // Update operation
-app.put('/update/:id', (req, res) => {
+app.put('/update/:id', auth.isAuthorized, (req, res) => {
   const data = readDataFromFile();
   const index = data.findIndex((item) => item.id === parseInt(req.params.id));
   if (index !== -1) {
@@ -422,7 +503,7 @@ app.put('/update/:id', (req, res) => {
 });
 
 // Delete operation
-app.delete('/delete/:id', (req, res) => {
+app.delete('/delete/:id', auth.isAuthorized, (req, res) => {
   const data = readDataFromFile();
   const index = data.findIndex((item) => item.id === parseInt(req.params.id));
   if (index !== -1) {
@@ -452,4 +533,5 @@ function saveDataToFile(data, fileName) {
 app.listen(PORT, () => {
   console.log(`Server started on port ${PORT}.`);
 });
+
 
