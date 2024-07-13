@@ -4,13 +4,27 @@ const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const multer = require("multer");
 
 const auth = require('./middleware/keycloak');
 const accountSid1 = process.env.ACCOUNT_SID;
 const authToken1 = process.env.AUTH_TOKEN;
+
+
+
 //const twillioClient = require('twilio')(accountSid, authToken);
 
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "public/uploads/")
+  },
+  filename: (req, file, cb) => {
+    console.log("file.originalname ", file.originalname);
+    cb(null, Date.now() + "-" + file.originalname)
+  },
+})
 
+const uploadStorage = multer({ storage: storage })
 dotenv.config();
 
 const app = express();
@@ -18,7 +32,7 @@ const PORT = 3300;
 const pg = require('pg')
 const Pool = require('pg').Pool
 
-
+app.use(express.static(__dirname+'/public'));
 
 const pool = new Pool({
   user: process.env.USER,
@@ -27,8 +41,6 @@ const pool = new Pool({
   port: '5432',
   database: process.env.DB,
 });
-const FILE_NAME = 'data.json';
-
 app.use(cors())
 // Middleware to parse request body
 app.use(bodyParser.json());
@@ -44,13 +56,14 @@ app.post('/login', (req, res) => {
 });
 
 // Create operation
-app.post('/create', (req, res) => {
-  const data = readDataFromFile();
-  const newItem = req.body;
-  data.push(newItem);
-  saveDataToFile(data);
-  res.send('Item added successfully.');
-});
+app.post("/create", uploadStorage.single("file-0"), (req, res) => {
+  
+  console.log("File--->", req.file-0)
+  console.log("File info ", req.file);
+  req.file.name = req.file.originalname;
+  req.file.url = req.protocol + '://' + req.get('host')+'/uploads/'+req.file.filename;
+  return res.send({"result":[req.file]});
+})
 
 
 app.post('/update_referral_doctor', auth.isAuthorized, (req, res) => {
@@ -59,7 +72,7 @@ app.post('/update_referral_doctor', auth.isAuthorized, (req, res) => {
     .connect()
     .then(client => {
       console.log('Connected to PostgreSQL database data ----> formData', formData);
-      pool.query('UPDATE public.tr_doctor_referrel SET doc_name=$1, doc_specialization=$2, doc_clinic=$3, doc_phone_number=$4, doc_email=$5 WHERE doc_id=$6 RETURNING doc_id', [`${formData.doc_name} `, `${formData.doc_name} `, `${formData.doc_name} `, `${formData.doc_phone_number} `, `${formData.doc_email}`, `${formData.doc_id}`], function (err, result, done) {
+      pool.query('UPDATE public.tr_doctor_referrel SET doc_name=$1, doc_specialization=$2, doc_clinic=$3, doc_phone_number=$4, doc_email=$5 WHERE doc_id=$6 RETURNING doc_id', [`${formData.doc_name} `, `${formData.doc_specialization} `, `${formData.doc_clinic} `, `${formData.doc_phone_number} `, `${formData.doc_email}`, `${formData.doc_id}`], function (err, result, done) {
 
         if (err) {
           client.release();
@@ -121,10 +134,6 @@ app.post('/send_study_referral', auth.isAuthorized, (req, res) => {
     });
 });
 function sendWhatsappreferral(doc_id, comment) {
-  let updatedComment = '';
-  if (comment != '') {
-    updatedComment = comment.replace("http://localhost:3000", "http://ciaiteleradiology.com").replace("Dr. Laxman", "Doctor");
-  }
   pool
     .connect()
     .then(client => {
@@ -165,19 +174,18 @@ function sendWhatsappreferral(doc_id, comment) {
           console.log("Connection closed...");
           twillioClient.messages
             .create({
-              body: updatedComment,
+              body: comment,
               from: 'whatsapp:+14155238886',
               to: toContact
             })
             .then(message => console.log(message.sid));
-
         }
       });
     });
 }
-app.get('/send-whatsapp-message', async (req, res) => { 
- // const twillioClient = require('twilio')('AC51a2b91e7519cda345df153fe67eae80', '4e5035cd2b2047050eaaee0d7a8468ce');
- const twillioClient = require('twilio')('AC51a2b91e7519cda345df153fe67eae80', 'd2d8ff3ce2d4a79bdfcb1b44f5822c5a');
+app.get('/send-whatsapp-message', async (req, res) => {
+  // const twillioClient = require('twilio')('AC51a2b91e7519cda345df153fe67eae80', '4e5035cd2b2047050eaaee0d7a8468ce');
+  const twillioClient = require('twilio')('AC51a2b91e7519cda345df153fe67eae80', 'd2d8ff3ce2d4a79bdfcb1b44f5822c5a');
   //client.release();
   console.log("Connection closed...");
   twillioClient.messages
