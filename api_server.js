@@ -525,7 +525,7 @@ app.post('/update_template', auth.isAuthorized, (req, res) => {
       .then(client => {
         console.log('update_template ---> ', template_body);
         // 'UPDATE public.tr_templates SET template_content = $1 WHERE modality = $2', [template_body.template_content, template_body.modality],
-        pool.query('UPDATE public.tr_templates SET template_content = $1 WHERE modality = $2', [template_body.template_content, template_body.modality], function (err, result, done) {
+        pool.query('UPDATE public.tr_templates SET template_content = $1 WHERE modality = $2 AND sub_modality=$3', [template_body.template_content, template_body.modality, template_body.sub_modality], function (err, result, done) {
           if (err) {
             client.release();
             return console.error('error running query', err);
