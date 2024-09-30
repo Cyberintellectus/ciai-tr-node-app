@@ -165,20 +165,71 @@ function sendWhatsappreferral(doc_id, comment) {
           // const docName = result.rows[0].doc_name;
           // const phoneNum = result.rows[0].doc_phone_number;
           console.log("Cresd ", accountSid, authToken);
-          const toContact = 'whatsapp:+91' + phoneNum;
+          //const toContact = 'whatsapp:+91' + phoneNum;
+          const toContact = phoneNum;
 
           // const accountSid = result.rows[1].doc_name;
           // const authToken = result.rows[1].doc_phone_number;
-          const twillioClient = require('twilio')(accountSid, authToken);
+          //const twillioClient = require('twilio')(accountSid, authToken);
           client.release();
           console.log("Connection closed...");
-          twillioClient.messages
-            .create({
-              body: comment,
-              from: 'whatsapp:+14155238886',
-              to: toContact
-            })
-            .then(message => console.log(message.sid));
+          // twillioClient.messages
+          //   .create({
+          //     body: comment,
+          //     from: 'whatsapp:+14155238886',
+          //     to: toContact
+          //   })
+          //   .then(message => console.log(message.sid));
+
+          
+          var http = require("https");
+
+          var options = {
+            "method": "POST",
+            "hostname": "api.ultramsg.com",
+            "port": null,
+            "path": "/instance95879/messages/chat",
+            "headers": {
+              "content-type": "application/json"
+            }
+          };
+          
+          var req = http.request(options, function (res) {
+            var chunks = [];
+          
+            res.on("data", function (chunk) {
+              chunks.push(chunk);
+            });
+          
+            res.on("end", function () {
+              var body = Buffer.concat(chunks);
+              console.log(body.toString());
+            });
+          }); 
+          var postData = JSON.stringify({
+              "token": "c63atui3vx70epu9",
+              "to": toContact,
+              "body": comment,
+              "priority": 1,
+              "referenceId": "",
+              "msgId": "",
+              "mentions": ""
+          });
+          console.log("<------------WhatsApp ------------> \n");
+          console.log("WhatsApp postData ", postData);
+          req.write(postData);
+          req.end();
+
+
+
+
+
+
+
+
+
+
+
         }
       });
     });
@@ -218,6 +269,28 @@ app.get('/get_referral_doctors', auth.isAuthorized, async (req, res) => {
       });
     });
 });
+app.get('/get_sub_modalities/:modality', auth.isAuthorized, async (req, res) => {
+  let modality = req.params.modality;
+  pool
+    .connect()
+    .then(client => {
+      console.log('get_referral_doctors called...');
+      client.query('SELECT template_id, sub_modality FROM public.tr_templates WHERE modality=$1',[modality], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          console.log(result.rows[0]);
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': result.rows, 'status': 200 });
+        }
+      });
+    });
+});
+
 
 /**
  * Read Modalities to show in dropdown
@@ -272,12 +345,13 @@ app.get('/docker-sample', auth.isAuthorized, (req, res) => {
 });
 
 
-app.get('/read_modalities', auth.isAuthorized, (req, res) => {
+app.get('/read_modalities/:lab_id', auth.isAuthorized, (req, res) => {
+  let labId = req.params.lab_id;
   pool
     .connect()
     .then(client => {
       console.log('read_modalities called...');
-      client.query('SELECT t1.* FROM tr_modalities t1 LEFT JOIN tr_templates t2 ON t2.modality = t1.modality_name WHERE t2.modality IS NULL ORDER BY t1.modality_name ASC', function (err, result, done) {
+      client.query('SELECT * FROM tr_modalities WHERE modality_status=$1 ORDER BY modality_name ASC',['active'], function (err, result, done) {
 
         if (err) {
           client.release();
@@ -288,6 +362,31 @@ app.get('/read_modalities', auth.isAuthorized, (req, res) => {
           client.release();
           console.log("Connection closed...")
           res.send({ 'data': result.rows, 'status': 200 });
+        }
+      });
+    });
+});
+/**
+ * Check Template exist for Modality and sub modality
+ */
+app.get('/read_modalities_for_lab/:lab_id/:sub_modality', auth.isAuthorized, (req, res) => {
+  let labId = req.params.lab_id;
+  let subModality = req.params.sub_modality;
+  pool
+    .connect()
+    .then(client => {
+      console.log('read_modalities called...');
+      client.query('SELECT count(*) FROM tr_templates WHERE lab_id=$1 AND sub_modality=$2 ORDER BY t1.modality_name ASC',[labId, subModality], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          console.log(result);
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': result, 'status': 200 });
         }
       });
     });
@@ -355,14 +454,20 @@ app.get('/read_study_template/:lab_id/:template_id', auth.isAuthorized, (req, re
  *  lab_id
  *  template_id
 */
-app.get('/read_study_template_for_generate/:lab_id/:modality', auth.isAuthorized, (req, res) => {
+app.get('/read_study_template_for_generate/:lab_id/:modality/:type', auth.isAuthorized, (req, res) => {
   let lab_id = req.params.lab_id;
   let modality = req.params.modality;
+  let type = req.params.type;
+  let query = 'SELECT * FROM public.tr_templates WHERE lab_id=$1 AND modality=$2 AND is_deleted = $3 ORDER BY template_id ASC';
+  if(type == 'm'){
+    query = 'SELECT * FROM public.tr_templates WHERE lab_id=$1 AND template_id=$2 AND is_deleted = $3 ORDER BY template_id ASC';
+  }
+  console.log("Query---> ", query);
   pool
     .connect()
     .then(client => {
       console.log('read_study_template_for_generate called...', lab_id);
-      client.query('SELECT * FROM public.tr_templates WHERE lab_id=$1 AND modality=$2 AND is_deleted = $3 ORDER BY template_id ASC', [lab_id, modality, false], function (err, result, done) {
+      client.query(query, [lab_id, modality, false], function (err, result, done) {
 
         if (err) {
           client.release();
@@ -392,7 +497,7 @@ app.post('/create_template', auth.isAuthorized, (req, res) => {
       .connect()
       .then(client => {
         console.log('create_template ---> ', template_body);
-        pool.query('INSERT INTO public.tr_templates(modality, template_content, lab_id) VALUES ($1, $2, $3) RETURNING template_id', [`${template_body.modality}`, `${template_body.template_content}`, `${template_body.lab_id}`], function (err, result, done) {
+        pool.query('INSERT INTO public.tr_templates(modality, template_content, lab_id, sub_modality) VALUES ($1, $2, $3, $4) RETURNING template_id', [`${template_body.modality}`, `${template_body.template_content}`, `${template_body.lab_id}`, `${template_body.sub_modality}`], function (err, result, done) {
 
           if (err) {
             client.release();
