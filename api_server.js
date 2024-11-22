@@ -32,7 +32,7 @@ const PORT = 3300;
 const pg = require('pg')
 const Pool = require('pg').Pool
 
-app.use(express.static(__dirname+'/public'));
+app.use(express.static(__dirname + '/public'));
 
 const pool = new Pool({
   user: process.env.USER,
@@ -57,12 +57,12 @@ app.post('/login', (req, res) => {
 
 // Create operation
 app.post("/create", uploadStorage.single("file-0"), (req, res) => {
-  
-  console.log("File--->", req.file-0)
+
+  console.log("File--->", req.file - 0)
   console.log("File info ", req.file);
   req.file.name = req.file.originalname;
-  req.file.url = req.protocol + '://' + req.get('host')+'/uploads/'+req.file.filename;
-  return res.send({"result":[req.file]});
+  req.file.url = req.protocol + '://' + req.get('host') + '/uploads/' + req.file.filename;
+  return res.send({ "result": [req.file] });
 })
 
 
@@ -181,7 +181,7 @@ function sendWhatsappreferral(doc_id, comment) {
           //   })
           //   .then(message => console.log(message.sid));
 
-          
+
           var http = require("https");
 
           var options = {
@@ -193,27 +193,27 @@ function sendWhatsappreferral(doc_id, comment) {
               "content-type": "application/json"
             }
           };
-          
+
           var req = http.request(options, function (res) {
             var chunks = [];
-          
+
             res.on("data", function (chunk) {
               chunks.push(chunk);
             });
-          
+
             res.on("end", function () {
               var body = Buffer.concat(chunks);
               console.log(body.toString());
             });
-          }); 
+          });
           var postData = JSON.stringify({
-              "token": "c63atui3vx70epu9",
-              "to": toContact,
-              "body": comment,
-              "priority": 1,
-              "referenceId": "",
-              "msgId": "",
-              "mentions": ""
+            "token": "c63atui3vx70epu9",
+            "to": toContact,
+            "body": comment,
+            "priority": 1,
+            "referenceId": "",
+            "msgId": "",
+            "mentions": ""
           });
           console.log("<------------WhatsApp ------------> \n");
           console.log("WhatsApp postData ", postData);
@@ -275,7 +275,7 @@ app.get('/get_sub_modalities/:modality', auth.isAuthorized, async (req, res) => 
     .connect()
     .then(client => {
       console.log('get_referral_doctors called...');
-      client.query('SELECT template_id, sub_modality FROM public.tr_templates WHERE modality=$1',[modality], function (err, result, done) {
+      client.query('SELECT template_id, sub_modality FROM public.tr_templates WHERE modality=$1', [modality], function (err, result, done) {
 
         if (err) {
           client.release();
@@ -351,7 +351,7 @@ app.get('/read_modalities/:lab_id', auth.isAuthorized, (req, res) => {
     .connect()
     .then(client => {
       console.log('read_modalities called...');
-      client.query('SELECT * FROM tr_modalities WHERE modality_status=$1 ORDER BY modality_name ASC',['active'], function (err, result, done) {
+      client.query('SELECT * FROM tr_modalities WHERE modality_status=$1 ORDER BY modality_name ASC', ['active'], function (err, result, done) {
 
         if (err) {
           client.release();
@@ -376,7 +376,7 @@ app.get('/read_modalities_for_lab/:lab_id/:sub_modality', auth.isAuthorized, (re
     .connect()
     .then(client => {
       console.log('read_modalities called...');
-      client.query('SELECT count(*) FROM tr_templates WHERE lab_id=$1 AND sub_modality=$2 ORDER BY t1.modality_name ASC',[labId, subModality], function (err, result, done) {
+      client.query('SELECT count(*) FROM tr_templates WHERE lab_id=$1 AND sub_modality=$2 ORDER BY t1.modality_name ASC', [labId, subModality], function (err, result, done) {
 
         if (err) {
           client.release();
@@ -459,7 +459,7 @@ app.get('/read_study_template_for_generate/:lab_id/:modality/:type', auth.isAuth
   let modality = req.params.modality;
   let type = req.params.type;
   let query = 'SELECT * FROM public.tr_templates WHERE lab_id=$1 AND modality=$2 AND is_deleted = $3 ORDER BY template_id ASC';
-  if(type == 'm'){
+  if (type == 'm') {
     query = 'SELECT * FROM public.tr_templates WHERE lab_id=$1 AND template_id=$2 AND is_deleted = $3 ORDER BY template_id ASC';
   }
   console.log("Query---> ", query);
@@ -626,6 +626,365 @@ app.delete('/delete/:id', auth.isAuthorized, (req, res) => {
   } else {
     res.status(404).send('Item not found.');
   }
+});
+
+/**
+ * Subscription APIs
+ */
+
+/**
+ * API to create a lab by super admin
+ * Params
+ * - lab_name
+ * - lab_address
+ * - lab_image
+ * - lab_city
+ * - lab_state
+ * - lab_zipcode
+ * - lab_status
+ * - lab_unique_identifier
+ * - lab_created_by
+ */
+app.post('/create_lab', auth.isAuthorized, (req, res) => {
+  const formData = req.body;
+
+  pool
+    .connect()
+    .then(client => {
+      console.log('Connected to PostgreSQL database data ----> create_lab', formData);
+
+      pool.query('INSERT INTO public.tr_labs(lab_name, lab_address, lab_image, lab_city, lab_state, lab_zipcode, lab_status, lab_unique_identifier, lab_created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING lab_id', [`${formData.lab_name}`, `${formData.lab_address}`, `${formData.lab_image}`, `${formData.lab_city}`, `${formData.lab_state}`, `${formData.lab_zipcode}`, `active`, `${formData.lab_unique_identifier}`, `${formData.lab_created_by}`], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running create_lab query', err);
+        }
+        else {
+          client.release();
+          console.log(result);
+          res.send({ 'data': result, 'status': 200 });
+        }
+      });
+    });
+});
+
+
+app.post('/update_lab', auth.isAuthorized, (req, res) => {
+  const formData = req.body;
+  pool
+    .connect()
+    .then(client => {
+      console.log('Connected to PostgreSQL database data ----> formData', formData);
+      pool.query('UPDATE public.tr_labs SET lab_name=$1, lab_address=$2, lab_city=$3,lab_phone=$4 lab_updated_by=$5, lab_updated_date=CURRENT_DATE WHERE lab_id=$6 RETURNING lab_id', [`${formData.lab_name} `, `${formData.lab_address} `, `${formData.lab_city} `, `${formData.lab_phone} `, `${formData.lab_updated_by} `, `${formData.lab_id}`], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running  update_lab query', err);
+        }
+        else {
+          client.release();
+          console.log(result);
+          res.send({ 'result': result, 'status': 200 });
+        }
+      });
+    });
+});
+
+
+/**
+ * API to create a new subscription type by super admin
+ * params
+ * - subscription_type_name
+ * - subscription_description
+ * - subscription_type_created_by
+ */
+app.post('/create_subscription', auth.isAuthorized, (req, res) => {
+  const formData = req.body;
+
+  pool
+    .connect()
+    .then(client => {
+      console.log('Connected to PostgreSQL database data ----> create_lab', formData);
+
+      pool.query('INSERT INTO public.tr_subscription_types(subscription_type_name, subscription_type_status, subscription_description, subscription_type_created_by) VALUES ($1, $2, $3, $4) RETURNING subscription_type_id', [`${formData.subscription_type_name}`, `active`, `${formData.subscription_description}`, `${formData.subscription_type_created_by}`], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running subscription_description query', err);
+        }
+        else {
+          client.release();
+          console.log(result);
+          res.send({ 'data': result, 'status': 200 });
+        }
+      });
+    });
+});
+
+
+/**
+ * API to create a subscription for a lab by super admin
+ * params
+ *  - lab_id
+ *  - subscription_type_id
+ *  - lab_sub_created_by
+ */
+app.post('/create_lab_subscription', auth.isAuthorized, (req, res) => {
+  const formData = req.body;
+  pool
+    .connect()
+    .then(client => {
+      console.log('Connected to PostgreSQL database data ----> create_lab_subscription', formData);
+
+      pool.query('INSERT INTO public.tr_labs_subscriptions(lab_sub_status, lab_id, subscription_type_id, lab_sub_created_by) VALUES ($1, $2, $3, $4) RETURNING lab_sub_id', [`active`, `${formData.lab_id}`, `${formData.subscription_type_id}`, `${formData.lab_sub_created_by}`], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running create_lab_subscription query', err);
+        }
+        else {
+          client.release();
+          console.log(result);
+          res.send({ 'data': result, 'status': 200 });
+        }
+      });
+    });
+});
+
+
+/**
+ * API to update a subscription features  by super admin
+ * params
+ * - subscription_type_id
+ * - lab_sub_updated_by
+ * - lab_sub_id
+ * - lab_id
+ */
+
+app.post('/update_lab_subscription', auth.isAuthorized, (req, res) => {
+  const formData = req.body;
+  pool
+    .connect()
+    .then(client => {
+      console.log('Connected to PostgreSQL database data ----> formData', formData);
+      pool.query('UPDATE public.tr_labs_subscriptions SET subscription_type_id=$1, lab_sub_updated_by=$2, lab_sub_updated_date=CURRENT_DATE WHERE lab_sub_id=$3 AND lab_id=$4 RETURNING lab_sub_id', [`${formData.subscription_type_id} `, `${formData.lab_sub_updated_by} `, `${formData.lab_sub_id} `, `${formData.lab_id} `], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running  update_lab_subscription query', err);
+        }
+        else {
+          client.release();
+          console.log(result);
+          res.send({ 'result': result, 'status': 200 });
+        }
+      });
+    });
+});
+
+/**
+ * API to get all subscriptions to super admin
+ */
+app.get('/get_all_subscription_types', auth.isAuthorized, (req, res) => {
+
+  pool
+    .connect()
+    .then(client => {
+      console.log('tr_subscription_types called...');
+      client.query('SELECT * FROM public.tr_subscription_types ORDER BY subscription_type_id ASC', function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          console.log(result.rows);
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': result.rows, 'status': 200 });
+        }
+      });
+    });
+});
+
+/**
+ * API to get all labs info to super admin
+ */
+app.get('/get_all_labs_info', auth.isAuthorized, (req, res) => {
+
+  pool
+    .connect()
+    .then(client => {
+      console.log('get_all_labs_info called...');
+      client.query(`SELECT * FROM public.tr_labs WHERE lab_status='active' ORDER BY lab_id ASC`, function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running get_all_labs_info query', err);
+        }
+        else {
+          console.log(result.rows);
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': result.rows, 'status': 200 });
+        }
+      });
+    });
+});
+
+
+
+
+/**
+ * API to get all features for all subscriptions
+ */
+app.get('/get_all_subscription_features', auth.isAuthorized, (req, res) => {
+
+  pool
+    .connect()
+    .then(client => {
+      console.log('get_all_subscription_features called...');
+      client.query('SELECT * FROM public.tr_feature_subscription_map ORDER BY feature_id ASC', function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running get_all_subscription_features query', err);
+        }
+        else {
+          console.log(result.rows);
+          const finalresult = result = result.rows.reduce((acc, feature) => {
+            acc[feature.feature_unique_identifier] = feature;
+            return acc;
+          }, {});
+
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': finalresult, 'status': 200 });
+        }
+      });
+    });
+});
+
+/**
+ * API to create a subscription features  by super admin
+ * Params
+ * - feature_name
+ * - feature_unique_identifier
+ * - feature_is_available_for__basic - true/false
+ * - feature_is_available_for__standard - true/false
+ * - feature_is_available_for__premium - true/false
+ * - feature_access_created_by - true/false
+ * 
+ */
+app.post('/create_subscription_feature', auth.isAuthorized, (req, res) => {
+  const formData = req.body;
+  pool
+    .connect()
+    .then(client => {
+      console.log('Connected to PostgreSQL database data ----> create_lab', formData);
+
+      pool.query('INSERT INTO public.tr_feature_subscription_map(feature_name, feature_unique_identifier, feature_is_available_for__basic, feature_is_available_for__standard, feature_is_available_for__premium, feature_access_created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING feature_id', [`${formData.feature_name}`, `${formData.feature_unique_identifier}`, `${formData.feature_is_available_for__basic}`, `${formData.feature_is_available_for__standard}`, `${formData.feature_is_available_for__premium}`, `${formData.feature_access_created_by}`], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running create_lab query', err);
+        }
+        else {
+          client.release();
+          console.log(result);
+          res.send({ 'data': result, 'status': 200 });
+        }
+      });
+    });
+});
+
+/**
+ * API to update a subscription features  by super admin
+ * Params
+ * - feature_is_available_for__basic - true/false
+ * - feature_is_available_for__standard - true/false
+ * - feature_is_available_for__premium - true/false
+ * - feature_access_updated_by - true/false
+ * -feature_id
+ * 
+ */
+
+app.post('/update_subscription_feature', auth.isAuthorized, (req, res) => {
+  const formData = req.body;
+  pool
+    .connect()
+    .then(client => {
+      console.log('Connected to PostgreSQL database data ----> formData', formData);
+      pool.query('UPDATE public.tr_feature_subscription_map SET feature_is_available_for__basic=$1, feature_is_available_for__standard=$2, feature_is_available_for__premium=$3, feature_access_updated_by=$4, feature_access_updated_date=CURRENT_DATE WHERE feature_id=$5 RETURNING feature_id', [`${formData.feature_is_available_for__basic} `, `${formData.feature_is_available_for__standard} `, `${formData.feature_is_available_for__premium} `, `${formData.feature_access_updated_by} `, `${formData.feature_id}`], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running  update_subscription_feature query', err);
+        }
+        else {
+          client.release();
+          console.log(result);
+          res.send({ 'result': result, 'status': 200 });
+        }
+      });
+    });
+});
+
+
+
+
+/**
+ * API to get all labs subscriptions to super admin
+ * params
+ *  :lab_id
+ */
+
+app.get('/get_all_labs_subscriptions', auth.isAuthorized, (req, res) => {
+  pool
+    .connect()
+    .then(client => {
+      console.log('All Labs Subscriptions called...');
+      client.query(`select t1.lab_id, t1.lab_name, t1.lab_unique_identifier, t3.subscription_type_id,t2.subscription_type_name,t2.subscription_description, t3.lab_sub_status, t3.lab_sub_id from tr_labs t1 inner join tr_labs_subscriptions t3 on t1.lab_id=t3.lab_id AND t3.lab_sub_status='active' inner join tr_subscription_types t2 on t3.subscription_type_id = t2.subscription_type_id`, function (err, result, done) {
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          console.log(result.rows);
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': result.rows, 'status': 200 });
+        }
+      });
+    });
+});
+
+/**
+ * API to get lab subscriptions to lab admin
+ * params
+ *  :lab_id
+ */
+
+app.get('/get_lab_subscriptions/:lab_id', auth.isAuthorized, (req, res) => {
+  let labId = req.params.lab_id;
+  pool
+    .connect()
+    .then(client => {
+      console.log('Lab subscription for labId ...', labId);
+      client.query(`select t1.lab_id, t1.lab_name, t1.lab_unique_identifier, t3.subscription_type_id,t2.subscription_type_name,t2.subscription_description, t3.lab_sub_status from tr_labs t1 inner join tr_labs_subscriptions t3 on t1.lab_id=t3.lab_id AND t3.lab_sub_status='active' AND t1.lab_id=$1 inner join tr_subscription_types t2 on t3.subscription_type_id = t2.subscription_type_id`, [labId], function (err, result, done) {
+
+        if (err) {
+          client.release();
+          return console.error('error running query', err);
+        }
+        else {
+          console.log(result.rows[0]);
+          client.release();
+          console.log("Connection closed...")
+          res.send({ 'data': result.rows[0], 'status': 200 });
+        }
+      });
+    });
 });
 
 // Utility functions to read/write data from/to file
