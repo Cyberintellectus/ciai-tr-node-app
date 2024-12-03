@@ -1,0 +1,11 @@
+{
+  "realm": "",
+  "auth-server-url": "http://keycloak:8080",
+  "ssl-required": "external",
+  "resource": "",
+  "public-client": true,
+  "confidential-port": 0,
+  "verify-token-audience": true,
+  "use-resource-role-mappings": true,
+  "bearer-only": true
+}
