@@ -7,23 +7,29 @@ const session = require('express-session');
 const { Pool } = require('pg');
 const auth = require('./middleware/keycloak');
 var https = require("https");
+const crypto = require('crypto');
 
 const axios = require('axios');
 const qs = require('qs');
 
 dotenv.config();
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'public/uploads/');
-  },
-  filename: (req, file, cb) => {
-    console.log('file.originalname ', file.originalname);
-    cb(null, Date.now() + '-' + file.originalname);
-  }
-});
+// const storage = multer.diskStorage({
+//   destination: (req, file, cb) => {
+//     cb(null, 'public/uploads/');
+//   },
+//   filename: (req, file, cb) => {
+//     // Sanitize filename by removing special characters and spaces
+//     const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+//     const timestamp = Date.now();
+//     const uniqueFilename = `${timestamp}-${sanitizedName}`;
+//     console.log('Original filename:', file.originalname);
+//     console.log('Sanitized filename:', uniqueFilename);
+//     cb(null, uniqueFilename);
+//   }
+// });
 
-const uploadStorage = multer({ storage: storage });
+// const uploadStorage = multer({ storage: storage });
 const app = express();
 const PORT = process.env.PORT || 3300;
 
@@ -177,15 +183,17 @@ app.post('/send_study_referral', auth.isAuthorized, async (req, res) => {
   try {
     const formData = req.body;
 
-    const shortUrl1 = urlShortener64.encode(formData.sr_url);
-    console.log("Encoded Short URL Key:", shortUrl1);
+    //const shortUrl1 = urlShortener64.encode(formData.sr_url);
+    const short_key = generateUniqueKey();
+
+    console.log("Encoded Short URL Key:", short_key);
 
 
 
-    sendWhatsappreferral(formData.sr_to_doctor, formData.sr_requester_comments, shortUrl1, formData.sr_host_name);
+    sendWhatsappreferral(formData.sr_to_doctor, formData.sr_requester_comments, short_key, formData.sr_host_name);
     const result = await executeQuery(
-      'INSERT INTO public.tr_study_referrals(sr_to_doctor, sr_status, sr_requester_id, sr_requester_comments) VALUES ($1, $2, $3, $4) RETURNING sr_id',
-      [formData.sr_to_doctor, 'active', formData.sr_requester_id, formData.sr_requester_comments]
+      'INSERT INTO public.tr_study_referrals(sr_to_doctor, sr_status, sr_requester_id, sr_requester_comments, short_key, referred_url) VALUES ($1, $2, $3, $4, $5, $6) RETURNING sr_id',
+      [formData.sr_to_doctor, 'active', formData.sr_requester_id, formData.sr_requester_comments, short_key, formData.sr_url]
     );
     res.json({ data: result.rows, status: 200 });
   } catch (err) {
@@ -194,127 +202,150 @@ app.post('/send_study_referral', auth.isAuthorized, async (req, res) => {
   }
 });
 
+function generateUniqueKey() {
+  return crypto.randomBytes(16).toString('hex'); // 16 bytes = 32 characters in hexadecimal
+}
+
 const urlShortener64 = (() => {
-  const urlMap = new Map();
-  const base64Chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-  const encodeToBase64 = (input) => {
-    let hashValue = 0;
-    for (let i = 0; i < input.length; i++) {
-      hashValue = (hashValue * 31 + input.charCodeAt(i)) >>> 0; // Simple hash function
-    }
-
-    // Convert the hash value to a base-64 string
-    let base64String = "";
-    do {
-      base64String = base64Chars[hashValue % 64] + base64String;
-      hashValue = Math.floor(hashValue / 64);
-    } while (hashValue > 0);
-
-    return base64String;
-  };
-
   const encode = (longUrl) => {
-    const shortUrlKey = encodeToBase64(longUrl);
-    urlMap.set(shortUrlKey, longUrl);
-    return shortUrlKey;
+    try {
+      // Convert URL to Base64
+      const buffer = Buffer.from(longUrl, 'utf8');
+      const base64 = buffer.toString('base64');
+      
+      // Make it URL safe
+      return base64
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
+    } catch (err) {
+      console.error('URL encoding error:', err);
+      throw new Error('Invalid URL provided');
+    }
   };
 
-  const decode = (shortUrlKey) => {
-    return urlMap.get(shortUrlKey) || null;
+  const decode = (shortKey) => {
+    try {
+      // Restore Base64 padding
+      let base64 = shortKey
+        .replace(/-/g, '+')
+        .replace(/_/g, '/');
+      
+      // Add padding if needed
+      while (base64.length % 4) {
+        base64 += '=';
+      }
+      
+      // Decode Base64 back to URL
+      const buffer = Buffer.from(base64, 'base64');
+      return buffer.toString('utf8');
+    } catch (err) {
+      console.error('URL decoding error:', err);
+      return null;
+    }
   };
 
   return { encode, decode };
 })();
 
-// Example usage:
-// const longUrl1 = "https://example.com/some/very/long/url/with/query?params=true";
-// const shortUrl = urlShortener64.encode(longUrl1);
-// console.log("Encoded Short URL Key:", shortUrl);
-
-// const originalUrl = urlShortener64.decode(shortUrl);
-// console.log("Decoded Long URL:", originalUrl);
 
 
 
 
-function sendWhatsappreferral(doc_id, comment, shortUrl, host) {
-  pool.connect().then(client => {
-    console.log('sendWhatsappreferral called...');
-    client.query('SELECT doc_clinic, doc_name, doc_phone_number FROM public.tr_doctor_referrel WHERE doc_id = $1 AND is_deleted=$2', [doc_id, false], (err, result) => {
-      if (err) {
-        client.release();
-        return console.error('Error running query', err);
+async function sendWhatsappreferral(doc_id, comment, shortUrl, host) {
+  let client;
+  try {
+    client = await pool.connect();
+    const result = await client.query(
+      'SELECT doc_clinic, doc_name, doc_phone_number FROM public.tr_doctor_referrel WHERE doc_id = $1 AND is_deleted = $2',
+      [doc_id, false]
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error('No doctor found with the given ID');
+    }
+
+    const doctor = result.rows[0];
+    const toContact = doctor.doc_phone_number;
+
+    // Sanitize and encode message components
+    //const sanitizedDoctorName = encodeURIComponent(doctor.doc_name);
+    const sanitizedComment = comment ? encodeURIComponent(comment.trim()) : '';
+    const referralUrl = `${process.env.REFER_HOST}/teleapp/refer_to/${shortUrl}`;
+
+    // Construct message with proper encoding
+    const messageBody = `Hello Dr. ${doctor.doc_name} \nPlease check: ${referralUrl}`;
+
+    const options = {
+      method: "POST",
+      hostname: process.env.WHATSAPP_HOST,
+      path: "/instance95879/messages/chat",
+      headers: {
+        "content-type": "application/json"
       }
+    };
 
-      if (result.rows.length === 0) {
-        client.release();
-        return console.error('No doctor found with the given ID');
-      }
-
-      const doctor = result.rows[0];
-      const toContact = doctor.doc_phone_number;
-
-      client.release();
-      console.log("Connection closed...");
-
-      const options = {
-        method: "POST",
-        hostname: "api.ultramsg.com",
-        path: "/instance95879/messages/chat",
-        headers: {
-          "content-type": "application/json"
-        }
-      };
-
+    return new Promise((resolve, reject) => {
       const req = https.request(options, res => {
-        let chunks = [];
-
-        res.on("data", chunk => {
-          chunks.push(chunk);
-        });
-
+        const chunks = [];
+        res.on("data", chunk => chunks.push(chunk));
         res.on("end", () => {
-          const body = Buffer.concat(chunks);
-          console.log(body.toString());
+          const body = Buffer.concat(chunks).toString();
+          console.log("WhatsApp API Response:", body);
+          resolve(body);
         });
+        res.on("error", reject);
       });
 
+      req.on("error", reject);
+
       const postData = JSON.stringify({
-        token: "1c63atui3vx70epu9hhh",
+        token: process.env.WHATSAPP_TOKEN,
         to: toContact,
-        body: `Please click this link ${process.env.REFER_HOST}/teleapp/refer_to/${shortUrl}`,
+        body: messageBody,
         priority: 1,
-        referenceId: "",
-        msgId: "",
+        referenceId: `ref_${Date.now()}`,
+        msgId: `msg_${Date.now()}`,
         mentions: ""
       });
 
-      console.log("<------------WhatsApp ------------> \n");
-      console.log("WhatsApp postData ", postData);
+      console.log("WhatsApp request payload:", postData);
       req.write(postData);
       req.end();
     });
-  }).catch(err => {
-    console.error('Error connecting to the database', err);
-  });
+  } catch (err) {
+    console.error('Error in sendWhatsappreferral:', err);
+    throw err;
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
 }
 
 /**
  * API to URL redirect for referral
 */
 app.get('/refer_to/:url_str', async (req, res) => {
-  console.log('read_study_template   req.headers', req.headers);
+  console.log('read_study_url   req.headers', req.params);
   try {
-    const decodedUrl = urlShortener64.decode(req.params.url_str);
-    console.log("Decoded Long URL:", decodedUrl);
-    res.redirect(decodedUrl);
+
+    const result = await executeQuery(
+      'SELECT referred_url FROM public.tr_study_referrals WHERE short_key=$1 ORDER BY sr_id DESC',
+      [req.params.url_str]
+    );
+
+    console.log("Decoded Long URL 1234:", result.rows);
+    res.redirect(result.rows[0].referred_url);
 
   } catch (err) {
     console.error('Error reading study template:', err);
     res.status(500).json({ error: 'Database error', details: err.message });
   }
 });
+
+
+
 
 
 
