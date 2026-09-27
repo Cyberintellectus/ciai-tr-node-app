@@ -3,7 +3,6 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const multer = require('multer');
-const session = require('express-session');
 const { Pool } = require('pg');
 const auth = require('./middleware/keycloak');
 var https = require("https");
@@ -50,20 +49,24 @@ pool.on('error', (err) => {
   console.error('Unexpected error on idle client', err);
 });
 
+// Exact origins or "https://*.domain" wildcards; never reflect arbitrary origins
+const corsOriginPatterns = (process.env.CORS_ALLOWED_ORIGINS || 'https://ciaiteleradiology.com,https://*.ciaiteleradiology.com')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean)
+  .map((o) => {
+    const escaped = o.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('^' + escaped.replace('\\*\\.', '(?:[a-z0-9-]+\\.)+') + '$', 'i');
+  });
+
 app.use(cors({
-  origin: true,
-  credentials: true,
+  origin: (origin, callback) => callback(null, !!origin && corsOriginPatterns.some((re) => re.test(origin))),
+  credentials: false,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Realm', 'ClientId']
+  allowedHeaders: ['Content-Type', 'Authorization', 'Realm', 'ClientId', 'Isaccess', 'Usersub', 'Labid', 'Abcdefg', 'X1234']
 }));
 
 app.use(bodyParser.json());
-
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'someSecret',
-  resave: false,
-  saveUninitialized: true
-}));
 
 const executeQuery = async (query, params = []) => {
   let client;
@@ -83,6 +86,79 @@ const executeQuery = async (query, params = []) => {
       }
     }
   }
+};
+
+/**
+ * Resolves the caller's lab from the verified token realm. Client-sent Labid
+ * headers / lab_id fields are ignored so a user cannot act on another lab.
+ */
+const resolveLab = async (req, res, next) => {
+  try {
+    const result = await executeQuery(
+      `SELECT t1.lab_id FROM tr_labs t1
+       LEFT JOIN tr_labs_subscriptions t3 ON t3.lab_id = t1.lab_id AND t3.lab_sub_status = 'active'
+       WHERE t1.lab_unique_identifier = $1
+       ORDER BY (t3.lab_id IS NULL), t1.lab_id
+       LIMIT 1`,
+      [req.auth.realm]
+    );
+    if (result.rows.length === 0) {
+      return res.status(403).json({ error: 'No lab registered for this realm' });
+    }
+    req.labId = result.rows[0].lab_id;
+    if (req.labId && String(req.labId) !== String(req.labId)) {
+      console.warn(`Labid header mismatch: sub=${req.auth.sub} realm=${req.auth.realm} sent=${req.labId} actual=${req.labId} path=${req.path}`);
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Premium features need both the realm role and an active lab subscription
+ * that includes the feature (same rule the viewer UI uses to show it).
+ */
+const requireFeature = (feature) => async (req, res, next) => {
+  try {
+    if (!req.auth.roles.includes(feature)) {
+      console.warn(`Feature denied (role): ${feature} sub=${req.auth.sub} realm=${req.auth.realm}`);
+      return res.status(403).json({ error: 'Feature not available for this user' });
+    }
+    const result = await executeQuery(
+      `SELECT 1 FROM tr_labs_subscriptions ls
+       JOIN tr_subscription_fetaures sf ON sf.subscription_id = ls.subscription_type_id
+       JOIN tr_features ft ON ft.feature_id = sf.feature_id
+       WHERE ls.lab_id = $1 AND ls.lab_sub_status = 'active' AND ft.feature_unique_name = $2
+       LIMIT 1`,
+      [req.labId, feature]
+    );
+    if (result.rows.length === 0) {
+      console.warn(`Feature denied (subscription): ${feature} sub=${req.auth.sub} lab=${req.labId}`);
+      return res.status(403).json({ error: 'Feature not included in lab subscription' });
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Hosts referral links may point to (and /refer_to may redirect to), incl. subdomains
+const referralUrlHosts = (process.env.REFERRAL_URL_HOSTS || 'ciaiteleradiology.com')
+  .split(',')
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean);
+
+const isAllowedReferralUrl = (value) => {
+  let url;
+  try {
+    url = new URL(value);
+  } catch (err) {
+    return false;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+  const host = url.hostname.toLowerCase();
+  return referralUrlHosts.some((h) => host === h || host.endsWith('.' + h));
 };
 
 app.get('/secure', auth.isAuthorized, (req, res) => {
@@ -106,99 +182,102 @@ app.post('/get_cloud_token', auth.isAuthorized, async (req, res) => {
       'Content-Type': 'application/x-www-form-urlencoded'
     };
 
-    axios.post(url, payload, { headers: headers })
-      .then(response => {
-        const tokenData = response.data;
-        console.log(tokenData);
-        res.json({ data: tokenData, status: 200 });
-      });
+    const response = await axios.post(url, payload, { headers: headers });
+    res.json({ data: response.data, status: 200 });
 
   } catch (err) {
-    res.status(500).json({ error: 'Auth Error', details: err.message });
+    console.error('Error getting cloud token:', err.message);
+    res.status(500).json({ error: 'Auth Error' });
   }
 });
 
 
 
-app.post('/update_referral_doctor', auth.isAuthorized, async (req, res) => {
-  console.log('update_referral_doctor   req.headers', req.headers);
+app.post('/update_referral_doctor', auth.isAuthorized, resolveLab, async (req, res) => {
   try {
     const { doc_name, doc_specialization, doc_clinic, doc_phone_number, doc_email, doc_id } = req.body;
     const result = await executeQuery(
       'UPDATE public.tr_doctor_referrel SET doc_name=$1, doc_specialization=$2, doc_clinic=$3, doc_phone_number=$4, doc_email=$5, doctor_updated_by=$6,doc_updated_date=CURRENT_DATE  WHERE doc_id=$7 AND lab_id=$8 RETURNING doc_id',
-      [doc_name, doc_specialization, doc_clinic, doc_phone_number, doc_email, req.headers.usersub, doc_id, req.headers.labid]
+      [doc_name, doc_specialization, doc_clinic, doc_phone_number, doc_email, req.auth.sub, doc_id, req.labId]
     );
     res.json({ result, status: 200 });
   } catch (err) {
     console.error('Error updating referral doctor:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
 
 
-app.post('/add_referral_doctor', auth.isAuthorized, async (req, res) => {
-  console.log('add_referral_doctor   req.headers', req.headers);
+app.post('/add_referral_doctor', auth.isAuthorized, resolveLab, async (req, res) => {
   try {
     const { doc_name, doc_specialization, doc_clinic, doc_phone_number, doc_email } = req.body;
     const result = await executeQuery(
       'INSERT INTO public.tr_doctor_referrel(doc_name, doc_specialization, doc_clinic, doc_phone_number, doc_email, doctor_created_by, doc_created_date, lab_id) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_DATE, $7) RETURNING doc_id',
-      [doc_name, doc_specialization, doc_clinic, doc_phone_number, doc_email, req.headers.usersub, req.headers.labid]
+      [doc_name, doc_specialization, doc_clinic, doc_phone_number, doc_email, req.auth.sub, req.labId]
     );
     res.json({ data: result.rows, status: 200 });
   } catch (err) {
     console.error('Error adding referral doctor:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-app.get('/get_referral_doctors', auth.isAuthorized, async (req, res) => {
-  console.log('get_referral_doctors   req.headers', req.headers);
+app.get('/get_referral_doctors', auth.isAuthorized, resolveLab, async (req, res) => {
   try {
     const result = await executeQuery(
-      'SELECT * FROM public.tr_doctor_referrel WHERE is_deleted = false AND lab_id=$1 ORDER BY doc_id', [req.headers.labid]
+      'SELECT * FROM public.tr_doctor_referrel WHERE is_deleted = false AND lab_id=$1 ORDER BY doc_id', [req.labId]
     );
     res.json({ data: result.rows, status: 200 });
   } catch (err) {
     console.error('Error getting referral doctors:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-app.get('/get_sub_modalities/:modality', auth.isAuthorized, async (req, res) => {
-  console.log('get_sub_modalities   req.headers', req.headers);
+app.get('/get_sub_modalities/:modality', auth.isAuthorized, resolveLab, async (req, res) => {
   try {
     const result = await executeQuery(
       'SELECT template_id, sub_modality FROM public.tr_templates WHERE modality=$1 AND lab_id=$2',
-      [req.params.modality, req.headers.labid]
+      [req.params.modality, req.labId]
     );
     res.json({ data: result.rows, status: 200 });
   } catch (err) {
     console.error('Error getting sub modalities:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-app.post('/send_study_referral', auth.isAuthorized, async (req, res) => {
+app.post('/send_study_referral', auth.isAuthorized, resolveLab, requireFeature('refer_study_to_doctor'), async (req, res) => {
   try {
-    const formData = req.body;
+    // Requester identity comes from the verified token; body sr_requester_id is ignored
+    const { sr_to_doctor, sr_requester_comments, sr_url } = req.body || {};
 
-    //const shortUrl1 = urlShortener64.encode(formData.sr_url);
-    const short_key = generateUniqueKey();
+    if (typeof sr_url !== 'string' || !isAllowedReferralUrl(sr_url)) {
+      return res.status(400).json({ error: 'Invalid referral URL' });
+    }
 
-    console.log("Encoded Short URL Key:", short_key);
-
-
-
-    sendWhatsappreferral(formData.sr_to_doctor, formData.sr_requester_comments, short_key, formData.sr_host_name);
-    const result = await executeQuery(
-      'INSERT INTO public.tr_study_referrals(sr_to_doctor, sr_status, sr_requester_id, sr_requester_comments, short_key, referred_url) VALUES ($1, $2, $3, $4, $5, $6) RETURNING sr_id',
-      [formData.sr_to_doctor, 'active', formData.sr_requester_id, formData.sr_requester_comments, short_key, formData.sr_url]
+    const doctorResult = await executeQuery(
+      'SELECT doc_id, doc_name, doc_phone_number FROM public.tr_doctor_referrel WHERE doc_id = $1 AND lab_id = $2 AND is_deleted = false',
+      [sr_to_doctor, req.labId]
     );
+    if (doctorResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+
+    const short_key = generateUniqueKey();
+    const result = await executeQuery(
+      'INSERT INTO public.tr_study_referrals(sr_to_doctor, sr_status, sr_requester_sub, sr_lab_id, sr_requester_comments, short_key, referred_url) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING sr_id',
+      [doctorResult.rows[0].doc_id, 'active', req.auth.sub, req.labId, sr_requester_comments, short_key, sr_url]
+    );
+
+    sendWhatsappreferral(doctorResult.rows[0], short_key)
+      .catch((err) => console.error('Error in sendWhatsappreferral:', err.message));
+
     res.json({ data: result.rows, status: 200 });
   } catch (err) {
     console.error('Error sending study referral:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
@@ -252,95 +331,66 @@ const urlShortener64 = (() => {
 
 
 
-async function sendWhatsappreferral(doc_id, comment, shortUrl, host) {
-  let client;
-  try {
-    client = await pool.connect();
-    const result = await client.query(
-      'SELECT doc_clinic, doc_name, doc_phone_number FROM public.tr_doctor_referrel WHERE doc_id = $1 AND is_deleted = $2',
-      [doc_id, false]
-    );
+function sendWhatsappreferral(doctor, shortUrl) {
+  const referralUrl = `${process.env.REFER_HOST}/teleapp/refer_to/${shortUrl}`;
+  const messageBody = `Hello Dr. ${doctor.doc_name} 
+Please check: ${referralUrl}`;
 
-    if (result.rows.length === 0) {
-      throw new Error('No doctor found with the given ID');
+  const options = {
+    method: "POST",
+    hostname: process.env.WHATSAPP_HOST,
+    path: "/instance95879/messages/chat",
+    headers: {
+      "content-type": "application/json"
     }
+  };
 
-    const doctor = result.rows[0];
-    const toContact = doctor.doc_phone_number;
-
-    // Sanitize and encode message components
-    //const sanitizedDoctorName = encodeURIComponent(doctor.doc_name);
-    const sanitizedComment = comment ? encodeURIComponent(comment.trim()) : '';
-    const referralUrl = `${process.env.REFER_HOST}/teleapp/refer_to/${shortUrl}`;
-
-    // Construct message with proper encoding
-    const messageBody = `Hello Dr. ${doctor.doc_name} \nPlease check: ${referralUrl}`;
-
-    const options = {
-      method: "POST",
-      hostname: process.env.WHATSAPP_HOST,
-      path: "/instance95879/messages/chat",
-      headers: {
-        "content-type": "application/json"
-      }
-    };
-
-    return new Promise((resolve, reject) => {
-      const req = https.request(options, res => {
-        const chunks = [];
-        res.on("data", chunk => chunks.push(chunk));
-        res.on("end", () => {
-          const body = Buffer.concat(chunks).toString();
-          console.log("WhatsApp API Response:", body);
-          resolve(body);
-        });
-        res.on("error", reject);
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, res => {
+      const chunks = [];
+      res.on("data", chunk => chunks.push(chunk));
+      res.on("end", () => {
+        const body = Buffer.concat(chunks).toString();
+        console.log("WhatsApp API Response:", body);
+        resolve(body);
       });
-
-      req.on("error", reject);
-
-      const postData = JSON.stringify({
-        token: process.env.WHATSAPP_TOKEN,
-        to: toContact,
-        body: messageBody,
-        priority: 1,
-        referenceId: `ref_${Date.now()}`,
-        msgId: `msg_${Date.now()}`,
-        mentions: ""
-      });
-
-      console.log("WhatsApp request payload:", postData);
-      req.write(postData);
-      req.end();
+      res.on("error", reject);
     });
-  } catch (err) {
-    console.error('Error in sendWhatsappreferral:', err);
-    throw err;
-  } finally {
-    if (client) {
-      client.release();
-    }
-  }
+
+    req.on("error", reject);
+
+    req.write(JSON.stringify({
+      token: process.env.WHATSAPP_TOKEN,
+      to: doctor.doc_phone_number,
+      body: messageBody,
+      priority: 1,
+      referenceId: `ref_${Date.now()}`,
+      msgId: `msg_${Date.now()}`,
+      mentions: ""
+    }));
+    req.end();
+  });
 }
 
 /**
  * API to URL redirect for referral
 */
 app.get('/refer_to/:url_str', async (req, res) => {
-  console.log('read_study_url   req.headers', req.params);
   try {
-
     const result = await executeQuery(
       'SELECT referred_url FROM public.tr_study_referrals WHERE short_key=$1 ORDER BY sr_id DESC',
       [req.params.url_str]
     );
 
-    console.log("Decoded Long URL 1234:", result.rows);
-    res.redirect(result.rows[0].referred_url);
+    const target = result.rows.length ? result.rows[0].referred_url : null;
+    if (!target || !isAllowedReferralUrl(target)) {
+      return res.status(404).json({ error: 'Referral not found' });
+    }
+    res.redirect(target);
 
   } catch (err) {
-    console.error('Error reading study template:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    console.error('Error reading referral:', err);
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
@@ -361,51 +411,48 @@ app.get('/read_modalities/:lab_id', auth.isAuthorized, async (req, res) => {
     res.json({ data: result.rows, status: 200 });
   } catch (err) {
     console.error('Error reading modalities:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-app.get('/read_templates', auth.isAuthorized, async (req, res) => {
-  console.log('read_templates   req.headers', req.headers);
+app.get('/read_templates', auth.isAuthorized, resolveLab, async (req, res) => {
   try {
     const result = await executeQuery(
       'SELECT * FROM public.tr_templates WHERE lab_id=$1 AND is_deleted = $2 ORDER BY template_id ASC',
-      [req.headers.labid, false]
+      [req.labId, false]
     );
     res.json({ data: result.rows, status: 200 });
   } catch (err) {
     console.error('Error reading templates:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-app.post('/create_template', auth.isAuthorized, async (req, res) => {
-  console.log('create_template --->   req.headers', req.headers);
+app.post('/create_template', auth.isAuthorized, resolveLab, async (req, res) => {
   try {
-    const { modality, template_content, lab_id, sub_modality } = req.body;
+    const { modality, template_content, sub_modality } = req.body;
     const result = await executeQuery(
       'INSERT INTO public.tr_templates(modality, template_content, lab_id, sub_modality, template_created_by, create_date) VALUES ($1, $2, $3, $4, $5, CURRENT_DATE) RETURNING template_id',
-      [modality, template_content, lab_id, sub_modality, req.headers.usersub]
+      [modality, template_content, req.labId, sub_modality, req.auth.sub]
     );
     res.json({ data: result.rows, status: 200 });
   } catch (err) {
     console.error('Error creating template:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-app.post('/update_template', auth.isAuthorized, async (req, res) => {
-  console.log('updated_template --->   req.headers', req.headers);
+app.post('/update_template', auth.isAuthorized, resolveLab, async (req, res) => {
   try {
     const { template_content, modality, sub_modality } = req.body;
     const result = await executeQuery(
       'UPDATE public.tr_templates SET template_content = $1, template_updated_by=$2, updated_date=CURRENT_DATE  WHERE modality = $3 AND sub_modality=$4 AND lab_id=$5',
-      [template_content, req.headers.usersub, modality, sub_modality, req.headers.labid]
+      [template_content, req.auth.sub, modality, sub_modality, req.labId]
     );
     res.json({ data: result.rows, status: 200 });
   } catch (err) {
     console.error('Error updating template:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
@@ -425,7 +472,7 @@ app.post('/update_template', auth.isAuthorized, async (req, res) => {
 //     }
 //   } catch (err) {
 //     console.error('Error reading modality:', err);
-//     res.status(500).json({ error: 'Database error', details: err.message });
+//     res.status(500).json({ error: 'Database error' });
 //   }
 // });
 
@@ -438,36 +485,34 @@ app.post('/update_template', auth.isAuthorized, async (req, res) => {
 //     res.json({ data: result.rows, status: 200 });
 //   } catch (err) {
 //     console.error('Error reading modalities for lab:', err);
-//     res.status(500).json({ error: 'Database error', details: err.message });
+//     res.status(500).json({ error: 'Database error' });
 //   }
 // });
 
-app.get('/read_study_template/:lab_id/:template_id', auth.isAuthorized, async (req, res) => {
-  console.log('read_study_template   req.headers', req.headers);
+app.get('/read_study_template/:lab_id/:template_id', auth.isAuthorized, resolveLab, async (req, res) => {
   try {
     const result = await executeQuery(
       'SELECT * FROM public.tr_templates WHERE lab_id=$1 AND template_id=$2 AND is_deleted = $3 ORDER BY template_id ASC',
-      [req.headers.labid, req.params.template_id, false]
+      [req.labId, req.params.template_id, false]
     );
     res.json({ data: result.rows, status: 200 });
   } catch (err) {
     console.error('Error reading study template:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-app.get('/read_study_template_for_generate/:lab_id/:modality/:type', auth.isAuthorized, async (req, res) => {
-  console.log('read_study_template_for_generate   req.headers', req.headers);
+app.get('/read_study_template_for_generate/:lab_id/:modality/:type', auth.isAuthorized, resolveLab, async (req, res) => {
   try {
     const query = req.params.type === 'm'
       ? 'SELECT * FROM public.tr_templates WHERE lab_id=$1 AND template_id=$2 AND is_deleted = $3 ORDER BY template_id ASC'
       : 'SELECT * FROM public.tr_templates WHERE lab_id=$1 AND modality=$2 AND is_deleted = $3 ORDER BY template_id ASC';
 
-    const result = await executeQuery(query, [req.headers.labid, req.params.modality, false]);
+    const result = await executeQuery(query, [req.labId, req.params.modality, false]);
     res.json({ data: result.rows[0], status: 200 });
   } catch (err) {
     console.error('Error reading study template for generate:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
@@ -479,7 +524,6 @@ app.get('/read_study_template_for_generate/:lab_id/:modality/:type', auth.isAuth
 
 
 app.get('/get_lab_subscriptions/:lab_id', auth.isAuthorized, async (req, res) => {
-  console.log('get_lab_subscriptions   req.headers', req.headers);
   try {
     const firstQueryResult = await executeQuery(
       `select 
@@ -491,7 +535,7 @@ app.get('/get_lab_subscriptions/:lab_id', auth.isAuthorized, async (req, res) =>
 	AND t3.lab_sub_status='active' 
 	AND t1.lab_unique_identifier=$1
 	inner join tr_subscription_types t2 on t3.subscription_type_id = t2.subscription_type_id`,
-      [req.headers.realm]
+      [req.auth.realm]
     );
     // res.json({ data: result.rows, status: 200 });
     if (firstQueryResult.rows.length === 0) {
@@ -530,7 +574,7 @@ ORDER BY
 
   } catch (err) {
     console.error('Error reading study template:', err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
