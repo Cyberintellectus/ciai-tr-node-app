@@ -66,6 +66,12 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'Realm', 'ClientId', 'Isaccess', 'Usersub', 'Labid', 'Abcdefg', 'X1234']
 }));
 
+// The plugin's audit batches (up to 200 records) exceed the default 100 KB limit;
+// parsed here first, so the global parser below skips them.
+app.use('/audit/pipeline', bodyParser.json({ limit: '2mb' }));
+// AI drafts carry the run's findings (large MRI studies: several hundred KB); saved reports up to 1 MB of HTML.
+app.use('/reports/ai-draft', bodyParser.json({ limit: '5mb' }));
+app.use('/reports', bodyParser.json({ limit: '2mb' }));
 app.use(bodyParser.json());
 
 const executeQuery = async (query, params = []) => {
@@ -578,6 +584,19 @@ ORDER BY
   }
 });
 
+// Study audit and AI review (docs/AUDIT_LOGGING_DESIGN.md).
+const auditRoutes = require('./routes/audit');
+app.use('/audit', auditRoutes({ auth, resolveLab, executeQuery, pool }));
+
+// Report versions: AI drafts and radiologist versions (docs/AUDIT_LOGGING_DESIGN.md §10).
+app.use('/reports', require('./routes/reports')({ auth, resolveLab, pool }));
+
+// Daily audit retention; idempotent.
+const AUDIT_KEEP_MONTHS = Math.max(1, Number(process.env.AUDIT_KEEP_MONTHS) || 24);
+const runAuditPrune = () => auditRoutes.pruneAudit(executeQuery, AUDIT_KEEP_MONTHS)
+  .catch((err) => console.error('audit prune failed:', err.message));
+setTimeout(runAuditPrune, 60 * 1000).unref();
+setInterval(runAuditPrune, 24 * 3600 * 1000).unref();
 
 app.use((err, req, res, next) => {
   console.error('Global error handler:', err);
