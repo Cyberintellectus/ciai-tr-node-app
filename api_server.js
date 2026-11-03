@@ -591,6 +591,9 @@ app.use('/audit', auditRoutes({ auth, resolveLab, executeQuery, pool }));
 // Report versions: AI drafts and radiologist versions (docs/AUDIT_LOGGING_DESIGN.md §10).
 app.use('/reports', require('./routes/reports')({ auth, resolveLab, pool }));
 
+// Patient clinical history across studies (migrations/2026-11-03-patient-history.sql).
+app.use('/api/patients', require('./routes/patients')({ auth, resolveLab, pool }));
+
 // Daily audit retention; idempotent.
 const AUDIT_KEEP_MONTHS = Math.max(1, Number(process.env.AUDIT_KEEP_MONTHS) || 24);
 const runAuditPrune = () => auditRoutes.pruneAudit(executeQuery, AUDIT_KEEP_MONTHS)

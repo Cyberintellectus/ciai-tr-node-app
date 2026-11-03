@@ -1,7 +1,8 @@
 // Study audit API (docs/AUDIT_LOGGING_DESIGN.md §6).
 //
 // - POST /audit/pipeline       Orthanc plugin batch sync of per-study pipeline times
-// - POST /audit/events         viewer "AI report opened" (fire-and-forget)
+// - POST /audit/events         viewer "AI report opened", report editor viewed / printed /
+//                              downloaded as PDF or Word (fire-and-forget)
 // - POST /audit/review         radiologist accept / reject, confirmed before the UI changes
 // - GET  /audit/review-status  latest decision for the visible worklist rows
 // - GET  /audit/studies        one row per study for a date range, JSON or CSV
@@ -14,7 +15,21 @@ const crypto = require('crypto');
 const UID = /^[0-9.]{1,128}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const USER_EVENTS = new Set(['radiologist_viewed']);                     // decisions go through /review
+// Decisions go through /review, saved edits through /reports (report_edited).
+const USER_EVENTS = new Set(['radiologist_viewed', 'report_viewed', 'report_printed',
+  'report_downloaded_pdf', 'report_downloaded_docx']);
+const FILE_NAME = /^[^\u0000-\u001f\\/]{1,200}$/;
+
+/** The details a viewer event may carry, nothing else: file name, format, report version, draft. */
+function eventDetails(raw) {
+  const details = {};
+  if (!raw || typeof raw !== 'object') return details;
+  if (typeof raw.file_name === 'string' && FILE_NAME.test(raw.file_name)) details.file_name = raw.file_name;
+  if (raw.format === 'pdf' || raw.format === 'docx') details.format = raw.format;
+  if (Number.isInteger(raw.version) && raw.version >= 0) details.version = raw.version;
+  if (typeof raw.draft === 'boolean') details.draft = raw.draft;
+  return details;
+}
 const REJECT_REASONS = new Set(['inaccurate', 'missed_findings', 'wrong_study_or_quality', 'other']);
 const RADIOLOGIST_ROLE = process.env.AUDIT_RADIOLOGIST_ROLE || 'admin-role';
 const TZ = process.env.AUDIT_TIMEZONE || 'Asia/Kolkata';
@@ -167,17 +182,22 @@ module.exports = function auditRoutes({ auth, resolveLab, executeQuery, pool }) 
     } catch (err) { next(err); }
   });
 
-  /** POST /audit/events  { event_type: 'radiologist_viewed', study_id, event_id? }   viewer, user token. */
+  /**
+   * POST /audit/events  { event_type, study_id, event_id?, details? }   viewer, user token.
+   * event_type: radiologist_viewed | report_viewed | report_printed | report_downloaded_pdf |
+   * report_downloaded_docx; details: { file_name, format, version, draft } (others dropped).
+   */
   router.post('/events', auth.isAuthorized, resolveLab, (req, res) => {
     const { event_type, study_id } = req.body || {};
     if (!USER_EVENTS.has(event_type) || !UID.test(study_id || '')) return res.status(400).json({ error: 'Invalid event' });
     const eventId = UUID.test(req.body.event_id || '') ? req.body.event_id : crypto.randomUUID();
+    const details = eventDetails(req.body.details);
     res.status(202).json({ event_id: eventId });                        // the UI never waits for the DB
-    const fields = { source: 'viewer', event: event_type, study_id, lab_id: req.labId, user_id: req.auth.sub };
+    const fields = { source: 'viewer', event: event_type, study_id, lab_id: req.labId, user_id: req.auth.sub, ...details };
     executeQuery(
-      `INSERT INTO public.study_user_events (event_id, study_id, lab_id, user_id, user_name, event_type)
-       VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (event_id) DO NOTHING`,
-      [eventId, study_id, req.labId, req.auth.sub, userName(req), event_type])
+      `INSERT INTO public.study_user_events (event_id, study_id, lab_id, user_id, user_name, event_type, details)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (event_id) DO NOTHING`,
+      [eventId, study_id, req.labId, req.auth.sub, userName(req), event_type, details])
       .then((result) => { if (result.rowCount) logAudit(fields); })     // a retried event is stored and logged once
       .catch((err) => console.error(JSON.stringify({ kind: 'audit', reason: 'audit_db_failed', ...fields, error: err.message })));
   });
